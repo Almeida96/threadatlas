@@ -21,12 +21,22 @@ internal fun readJson(p: Path, max: Int): JsonNode = Files.newInputStream(p).use
 internal fun writeJson(p: Path, obj: Any) {
     Files.writeString(p, json.writerWithDefaultPrettyPrinter().writeValueAsString(obj) + "\n", StandardOpenOption.CREATE_NEW)
 }
+// Windows may briefly retain a subprocess or scanner handle after process exit.
+internal fun <T> retryFilesystem(action: () -> T): T {
+    for (attempt in 0..9) {
+        try { return action() } catch (e: FileSystemException) {
+            if (attempt == 9 || e is FileAlreadyExistsException || e is NoSuchFileException) throw e
+            Thread.sleep(50L * (attempt + 1))
+        }
+    }
+    error("Unreachable")
+}
 internal fun clean(p: Path) {
     if (!Files.exists(p, LinkOption.NOFOLLOW_LINKS)) return
     Files.walk(p).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach { f ->
-        try { Files.delete(f) } catch (e: AccessDeniedException) {
+        try { retryFilesystem { Files.delete(f) } } catch (e: AccessDeniedException) {
             if (Files.isSymbolicLink(f) || !f.toFile().setWritable(true)) throw e
-            Files.delete(f)
+            retryFilesystem { Files.delete(f) }
         }
     } }
 }
@@ -35,9 +45,15 @@ internal fun <T> outputDirectory(path: Path, body: (Path) -> T): T {
     require(!Files.exists(out, LinkOption.NOFOLLOW_LINKS)) { "Output already exists: $out" }
     Files.createDirectories(out.parent)
     val staging = Files.createTempDirectory(out.parent, ".threadatlas-")
+    var failure: Throwable? = null
     try {
         val result = body(staging)
-        Files.move(staging, out)
+        retryFilesystem { Files.move(staging, out) }
         return result
-    } finally { clean(staging) }
+    } catch (e: Throwable) { failure = e; throw e }
+    finally {
+        try { clean(staging) } catch (e: Exception) {
+            if (failure != null) failure.addSuppressed(e) else throw e
+        }
+    }
 }

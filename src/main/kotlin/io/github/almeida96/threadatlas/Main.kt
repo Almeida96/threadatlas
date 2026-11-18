@@ -34,12 +34,14 @@ internal fun captureDemo(out: Path) = outputDirectory(out) { stage ->
                 try {
                     check(capture.waitFor(20, TimeUnit.SECONDS) && capture.exitValue() == 0) { "jcmd capture failed" }
                 } finally { if (capture.isAlive) { capture.destroyForcibly(); capture.waitFor(5, TimeUnit.SECONDS) } }
-                Files.delete(errors)
+                retryFilesystem { Files.delete(errors) }
                 file
             }
             writeReport(Analyzer.analyze(captures), dir.resolve("analysis"))
         } finally {
-            proc.destroyForcibly(); proc.waitFor(10, TimeUnit.SECONDS)
+            proc.destroyForcibly()
+            check(proc.waitFor(10, TimeUnit.SECONDS)) { "Demo JVM did not terminate" }
+            proc.outputStream.close(); proc.inputStream.close(); proc.errorStream.close()
         }
     }
 }
